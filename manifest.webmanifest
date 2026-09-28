@@ -1,0 +1,28 @@
+{
+  "id": "bikan-museum-v1",
+  "name": "わたしの美術館 — 今日見つけた美しいもの",
+  "short_name": "わたしの美術館",
+  "description": "今日見つけた美しいものを、写真・文章・URL・音楽・声・場所のまま保存して、図鑑と一冊の本に育てる個人美術館。",
+  "lang": "ja",
+  "dir": "ltr",
+  "start_url": "./index.html?source=pwa",
+  "scope": "./",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "any",
+  "background_color": "#14161b",
+  "theme_color": "#14161b",
+  "categories": ["lifestyle", "photo", "personalization"],
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-maskable-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "今日の展示を見る", "short_name": "今日", "url": "./index.html?view=today" },
+    { "name": "美しいものを保存", "short_name": "保存", "url": "./index.html?action=save" },
+    { "name": "展示室をひらく", "short_name": "展示室", "url": "./index.html?view=gallery" },
+    { "name": "図鑑をひらく", "short_name": "図鑑", "url": "./index.html?view=codex" }
+  ]
+}
