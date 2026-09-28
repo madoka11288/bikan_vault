@@ -4,7 +4,7 @@
      ・CDNの書体と地図ライブラリは使った分だけ溜めておく
      ・Googleの認証とドライブAPIは絶対に触らない(常にネットへ)
    */
-const V = 'bikan-v2';
+const V = 'bikan-v4';
 const SHELL = [
   './',
   './index.html',

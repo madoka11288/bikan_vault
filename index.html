@@ -400,6 +400,13 @@ code.k{font-family:var(--font-mono);font-size:11.5px;background:var(--ink);borde
   body::before,.rail,.tabbar,.bookbar,.booknav,.pagehead .tools{display:none!important}
   .book{box-shadow:none}
 }
+ .p2plog{font-family:var(--font-mono);font-size:11px;line-height:1.75;max-height:148px;overflow:auto;
+   border:1px solid var(--line-soft);border-radius:var(--r);padding:9px 11px;background:var(--ink);color:var(--porcelain-dim)}
+ .p2plog:empty{display:none}
+ .p2pcode{font-family:var(--font-mono);font-size:30px;letter-spacing:.22em;color:var(--brass);
+   border:1px dashed var(--line);border-radius:var(--r);padding:12px 16px;text-align:center;background:var(--ink)}
+ .easiest{border:1px solid var(--brass);border-left-width:3px}
+ .easiest .tag{font-family:var(--font-mono);font-size:9.5px;letter-spacing:.18em;color:#14161b;background:var(--brass);padding:2px 8px;border-radius:99px;margin-left:8px}
 </style>
 </head>
 <body>
@@ -629,6 +636,26 @@ code.k{font-family:var(--font-mono);font-size:11.5px;background:var(--ink);borde
             <input type="file" id="import-file" accept="application/json,.json" class="sr">
           </div>
           <div class="count" id="store-stats"></div>
+        </div>
+        <div class="panel easiest" style="grid-column:1/-1">
+          <h3>合言葉で直接つなぐ<span class="tag">いちばん簡単</span></h3>
+          <p class="hintline">アカウントもトークンも要りません。<strong>2台を同じWi-Fiにつないで</strong>、6桁の合言葉を合わせるだけ。その場で両方の中身が混ざります。設定は何も残りません。</p>
+          <div class="row">
+            <button class="btn primary" id="p2p-host">この端末を待ち受ける</button>
+            <span class="count" id="p2p-code"></span>
+          </div>
+          <div id="p2p-showcode"></div>
+          <div class="row" style="align-items:flex-end;margin-top:4px">
+            <div class="field" style="flex:1;min-width:140px">
+              <label for="p2p-input">相手の合言葉（6桁）</label>
+              <input class="inp" id="p2p-input" inputmode="numeric" autocomplete="off" placeholder="123456" maxlength="6" style="font-family:var(--font-mono);letter-spacing:.18em">
+            </div>
+            <button class="btn" id="p2p-join">つなぐ</button>
+            <button class="btn ghost tiny" id="p2p-close">やめる</button>
+          </div>
+          <div class="count" id="p2p-status">待機していません</div>
+          <div class="p2plog" id="p2p-log"></div>
+          <div class="hintline">同じ部屋のWi-Fiなら確実につながります。別々の場所（片方がモバイル回線）だと、回線の種類によってはつながらないことがあります。そのときは下の「ファイルで移す」をお使いください。</div>
         </div>
         <div class="panel">
           <h3>アプリとして使う</h3>
@@ -2600,6 +2627,233 @@ function startServiceWorker(){
   navigator.serviceWorker.addEventListener('controllerchange', ()=>{ if(reloading) return; reloading=true; location.reload(); });
 }
 startServiceWorker();
+
+
+/* ==========================================================================
+   15. 合言葉で直接つなぐ — アカウント不要の端末間転送
+   ・6桁の合言葉から待ち受け側のIDを決め、WebRTCで直接つなぐ
+   ・つないだら、まず索引を交換 → 相手が持っていない実体だけを送る
+   ・大きなものは分割して送り、受け側で組み立てる
+   ========================================================================== */
+const p2p={ peer:null, conn:null, code:null, role:null, busy:false, rx:new Map(), timer:null, sending:false };
+function p2pSay(msg){
+  const el=$('#p2p-log'); if(!el) return;
+  const d=document.createElement('div'); d.textContent=msg; el.appendChild(d); el.scrollTop=el.scrollHeight;
+}
+function p2pStatus(s){ const el=$('#p2p-status'); if(el) el.textContent=s; }
+function p2pCodeShow(code){
+  const el=$('#p2p-showcode'); if(!el) return;
+  const c=$('#p2p-code');
+  if(!code){ el.innerHTML=''; if(c) c.textContent=''; return; }
+  if(c) c.textContent='';
+  el.innerHTML='<div class="p2pcode">'+code.slice(0,3)+'　'+code.slice(3)+'</div>'+
+    '<div class="count" style="margin:6px 0 4px">この6桁を相手の端末に入力してください</div>';
+}
+function loadPeerLib(){
+  if(window.Peer) return Promise.resolve();
+  if(window.__peerP) return window.__peerP;
+  window.__peerP=new Promise((res,rej)=>{
+    const s=document.createElement('script');
+    s.src='https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js';
+    s.async=true;
+    s.onload=()=>{ window.Peer? res() : rej(new Error('通信ライブラリを読み込めませんでした')); };
+    s.onerror=()=>rej(new Error('通信ライブラリを読み込めませんでした（ネット接続をご確認ください）'));
+    document.head.appendChild(s);
+  });
+  return window.__peerP;
+}
+const randDigits=n=>Array.from({length:n},()=>Math.floor(Math.random()*10)).join('');
+const p2pId=c=>'bikan6-'+c;
+
+async function p2pHost(){
+  if(p2p.busy) return;
+  p2p.busy=true;
+  try{
+    await loadPeerLib();
+    p2pClose(true);
+    $('#p2p-log').innerHTML='';
+    p2p.role='host'; p2p.code=randDigits(6);
+    p2pStatus('待っています… 相手の端末にこの合言葉を入力してください');
+    p2pSay('合言葉を用意しました');
+    p2pCodeShow(p2p.code);
+    p2p.peer=new Peer(p2pId(p2p.code),{debug:0});
+    p2p.peer.on('open',()=>p2pSay('待機を開始しました（この画面を開いたままにしてください）'));
+    p2p.peer.on('error',e=>{
+      const t=(e&&e.type)||'';
+      if(t==='unavailable-id'){ p2pSay('この合言葉は使用中でした。もう一度「待ち受ける」を押してください'); }
+      else if(t==='network'||t==='server-error'){ p2pSay('中継サーバーにつながりませんでした。ネット接続をご確認ください'); }
+      else p2pSay('エラー：'+t);
+      p2pStatus('うまく始められませんでした');
+    });
+    p2p.peer.on('connection',c=>{
+      if(p2p.conn){ try{c.close();}catch(e){} return; }
+      p2p.conn=c; bindConn(c,'host');
+    });
+    p2p.timer=setTimeout(()=>{
+      if(!p2p.conn){ p2pStatus('待ち時間が終わりました'); p2pSay('（5分待って、相手が現れませんでした）'); p2pClose(true); }
+    },5*60*1000);
+  }catch(e){ p2pStatus('始められませんでした'); p2pSay('エラー：'+(e.message||e)); }
+  finally{ p2p.busy=false; }
+}
+async function p2pJoin(){
+  const inp=$('#p2p-input');
+  const code=(inp? inp.value : '').replace(/\D/g,'');
+  if(code.length!==6){ toast('6桁の合言葉を入れてください'); return; }
+  if(p2p.busy) return;
+  p2p.busy=true;
+  try{
+    await loadPeerLib();
+    p2pClose(true);
+    $('#p2p-log').innerHTML='';
+    p2p.role='guest'; p2p.code=code;
+    p2pStatus('つないでいます…');
+    p2pSay('合言葉 '+code+' に接続します');
+    p2p.peer=new Peer({debug:0});
+    let tries=0;
+    const already=()=>!!(p2p.conn && p2p.conn.open);
+    const attempt=()=>{
+      if(already() || !p2p.peer || p2p.peer.destroyed) return;
+      tries++;
+      const c=p2p.peer.connect(p2pId(code),{reliable:true});
+      p2p.conn=c; bindConn(c,'guest');
+    };
+    p2p.peer.on('error',e=>{
+      const t=(e&&e.type)||'';
+      if(t==='peer-unavailable'){
+        if(tries<4 && p2p.peer && !p2p.peer.destroyed){
+          p2pStatus('相手の待機を待っています…（'+tries+'回目）');
+          p2pSay('まだ待機が見つかりません。4秒後にもう一度つないでみます');
+          setTimeout(()=>{ if(!already()) attempt(); },4000);
+        } else {
+          p2pStatus('相手が見つかりません');
+          p2pSay('その合言葉は待機していません。桁（6桁）と、相手の画面が開いたままかどうかをご確認ください');
+        }
+      }
+      else if(t==='network'||t==='server-error'){ p2pSay('中継サーバーにつながりませんでした。ネット接続をご確認ください'); p2pStatus('つながりませんでした'); }
+      else { p2pSay('エラー：'+t); p2pStatus('つながりませんでした'); }
+    });
+    p2p.peer.on('open',attempt);
+    p2p.timer=setTimeout(()=>{
+      if(!p2p.conn || !p2p.conn.open){
+        p2pStatus('つながりませんでした');
+        p2pSay('（応答がありません。合言葉6桁と、同じWi-Fiかどうかをご確認ください）');
+      }
+    },45000);
+  }catch(e){ p2pStatus('始められませんでした'); p2pSay('エラー：'+(e.message||e)); }
+  finally{ p2p.busy=false; }
+}
+function bindConn(c,role){
+  c.on('open',()=>{
+    clearTimeout(p2p.timer); p2p.timer=null;
+    p2pStatus('つながりました — 中身を突き合わせています…');
+    p2pSay('接続しました（'+(role==='host'?'待ち受け側':'つなぎに行った側')+'）');
+    try{ c.send({t:'idx', v:myVaultForPeer()}); }catch(e){ p2pSay('送信エラー：'+(e.message||e)); }
+    p2pSay('こちらの記録 '+state.items.length+' 点の索引を送りました');
+  });
+  c.on('data',d=>p2pRecv(d,c));
+  c.on('close',()=>{ p2pStatus('接続が終わりました'); p2pSay('切断しました'); });
+  c.on('error',e=>p2pSay('通信エラー：'+((e&&e.type)||e)));
+}
+function myVaultForPeer(){
+  const media={}, audio={};
+  state.items.forEach(it=>{
+    if(it.media) media[it.id]={t:it.updatedAt||it.createdAt||0};
+    if(it.blobKey) audio[it.id]={t:it.updatedAt||it.createdAt||0};
+  });
+  return {items:state.items.map(stripHeavy), tomb:SET.get('tomb',{}), media:media, audio:audio};
+}
+async function p2pRecv(d,conn){
+  try{
+    if(d.t==='idx'){
+      const merged=mergeIndex({items:state.items.map(stripHeavy),tomb:SET.get('tomb',{})},d.v);
+      state.items=merged.items;
+      SET.set('tomb',merged.tomb||{});
+      for(const it of state.items) await DB.put('items',it);
+      renumber(); renderAll();
+      p2pSay('相手の記録を取り込みました（いま '+state.items.length+' 点）');
+      await p2pSendMissing(d.v,conn);
+    } else if(d.t==='bin'){
+      const key=d.kind+':'+d.id;
+      let e=p2p.rx.get(key);
+      if(!e){ e={n:d.n,parts:new Array(d.n),got:0}; p2p.rx.set(key,e); }
+      if(e.parts[d.i]===undefined){ e.parts[d.i]=d.chunk; e.got++; }
+      if(e.got%10===0) p2pStatus('受け取っています… '+Math.round(e.got/e.n*100)+'%');
+      if(e.got>=e.n){
+        p2p.rx.delete(key);
+        const b64=e.parts.join('');
+        await p2pApplyBin(d.kind,d.id,b64,d.type);
+        p2pSay((d.kind==='media'?'写真':'音声')+'を1件受け取りました');
+      }
+    } else if(d.t==='fin'){
+      p2pStatus('完了しました — 双方の展示が同じになりました');
+      p2pSay('相手からの送信が終わりました');
+      renderAll();
+    }
+  }catch(e){ p2pSay('取り込みでエラー：'+(e.message||e)); }
+}
+async function p2pSendMissing(peerV,conn){
+  if(p2p.sending) return;
+  p2p.sending=true;
+  let count=0;
+  try{
+    for(const it of state.items){
+      const id=it.id;
+      if(it.media && it.media.indexOf('data:')===0){
+        const pm=peerV.media && peerV.media[id];
+        if(!pm || (pm.t||0) < (it.updatedAt||it.createdAt||0)){
+          const b64=String(it.media).split(',')[1]||'';
+          if(b64){ await p2pSendB64(conn,'media',id,b64,'image/jpeg'); count++; }
+        }
+      }
+      if(it.blobKey){
+        const pa=peerV.audio && peerV.audio[id];
+        if(!pa || (pa.t||0) < (it.updatedAt||it.createdAt||0)){
+          const rec=await DB.get('blobs','bl_'+it.blobKey);
+          if(rec && rec.data){ await p2pSendB64(conn,'audio',id,await blobB64(rec.data),rec.type||'audio/webm'); count++; }
+        }
+      }
+    }
+    conn.send({t:'fin'});
+    p2pSay(count? ('こちらから '+count+' 件の実体を送りました') : 'こちらから送るものはありませんでした');
+  }catch(e){ p2pSay('送信でエラー：'+(e.message||e)); }
+  finally{ p2p.sending=false; }
+}
+async function p2pSendB64(conn,kind,id,b64,type){
+  const CH=24000, n=Math.max(1,Math.ceil(b64.length/CH));
+  for(let i=0;i<n;i++){
+    conn.send({t:'bin',kind:kind,id:id,i:i,n:n,chunk:b64.substr(i*CH,CH),type:type});
+    if(n>3 && i%20===0) p2pStatus('送っています… '+Math.round(i/n*100)+'%');
+    if(i%40===39) await new Promise(r=>setTimeout(r,0));
+  }
+}
+async function p2pApplyBin(kind,id,b64,type){
+  const it=state.items.find(x=>x.id===id);
+  if(kind==='media'){
+    const dataUrl='data:'+(type||'image/jpeg')+';base64,'+b64;
+    if(it){ it.media=dataUrl; it.thumb=dataUrl; await DB.put('items',it); }
+  } else {
+    const blob=dataUrlToBlob('data:'+(type||'audio/webm')+';base64,'+b64);
+    const key= it && it.blobKey? it.blobKey : id;
+    if(it){ it.blobKey=key; if(!it.mediaName) it.mediaName='声・音楽'; await DB.put('items',it); }
+    await DB.put('blobs',{k:'bl_'+key,data:blob,type:type||'audio/webm'});
+  }
+}
+function p2pClose(silent){
+  try{ if(p2p.conn) p2p.conn.close(); }catch(e){}
+  try{ if(p2p.peer) p2p.peer.destroy(); }catch(e){}
+  if(p2p.timer){ clearTimeout(p2p.timer); p2p.timer=null; }
+  p2p.conn=null; p2p.peer=null; p2p.rx.clear(); p2p.sending=false;
+  p2pCodeShow(null);
+  if(!silent){ p2pStatus('待機していません'); p2pSay('やめました'); }
+}
+(function bindP2P(){
+  const host=$('#p2p-host'), join=$('#p2p-join'), cl=$('#p2p-close'), inp=$('#p2p-input');
+  if(host) host.onclick=p2pHost;
+  if(join) join.onclick=p2pJoin;
+  if(cl) cl.onclick=()=>{ p2pClose(); toast('やめました'); };
+  if(inp) inp.addEventListener('input',()=>{ inp.value=inp.value.replace(/\D/g,'').slice(0,6); });
+  if(inp) inp.addEventListener('keydown',e=>{ if(e.key==='Enter') p2pJoin(); });
+})();
 
 (async function boot(){
   setMode(SET.get('mode','night'));
